@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"strconv"
@@ -8,9 +9,16 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type WebhookConfig struct {
+	Name      string   `json:"name"`
+	URL       string   `json:"url"`
+	Senders   []string `json:"senders"`
+	Recipients []string `json:"recipients"`
+	Template  string   `json:"template"`
+}
+
 type Config struct {
 	Port               int
-	WebhookURL         string
 	WebhookConcurrency int
 	S3BucketName       string
 	AWSRegion          string
@@ -18,6 +26,7 @@ type Config struct {
 	AWSSecretAccessKey string
 	MaxFileSize        int64
 	SMTPSecure         bool
+	Webhooks           []WebhookConfig
 }
 
 func Load() *Config {
@@ -26,9 +35,10 @@ func Load() *Config {
 		log.Println("No .env file found")
 	}
 
+	webhooks := loadWebhookConfig()
+
 	return &Config{
 		Port:               getInt("PORT", 25),
-		WebhookURL:         getString("WEBHOOK_URL", "https://enkhprqr4n2t.x.pipedream.net/"),
 		WebhookConcurrency: getInt("WEBHOOK_CONCURRENCY", 5),
 		S3BucketName:       getString("S3_BUCKET_NAME", ""),
 		AWSRegion:          getString("AWS_REGION", ""),
@@ -36,7 +46,31 @@ func Load() *Config {
 		AWSSecretAccessKey: getString("AWS_SECRET_ACCESS_KEY", ""),
 		MaxFileSize:        getInt64("MAX_FILE_SIZE", 5*1024*1024),
 		SMTPSecure:         getBool("SMTP_SECURE", false),
+		Webhooks:           webhooks,
 	}
+}
+
+func loadWebhookConfig() []WebhookConfig {
+	var webhooks []WebhookConfig
+	configStr := getString("WEBHOOK_CONFIG", "")
+	if configStr == "" {
+		// Default webhook if no config is provided
+		return []WebhookConfig{
+			{
+				Name:    "default",
+				URL:     getString("WEBHOOK_URL", "https://enkhprqr4n2t.x.pipedream.net/"),
+				Senders: []string{"*"},
+				Recipients: []string{"*"},
+				Template:  "{{. | json}}",
+			},
+		}
+	}
+
+	err := json.Unmarshal([]byte(configStr), &webhooks)
+	if err != nil {
+		log.Fatalf("Error parsing WEBHOOK_CONFIG: %v", err)
+	}
+	return webhooks
 }
 
 func getString(key, defaultValue string) string {

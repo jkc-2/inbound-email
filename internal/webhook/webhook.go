@@ -1,11 +1,11 @@
 package webhook
 
 import (
-	"bytes"
+	"email-forwarder/internal/config"
 	"email-forwarder/internal/email"
-	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -16,15 +16,15 @@ type Job struct {
 type Worker struct {
 	id         int
 	jobQueue   chan Job
-	webhookURL string
+	webhooks   []config.WebhookConfig
 	client     *http.Client
 }
 
-func NewWorker(id int, jobQueue chan Job, webhookURL string) *Worker {
+func NewWorker(id int, jobQueue chan Job, webhooks []config.WebhookConfig) *Worker {
 	return &Worker{
 		id:         id,
 		jobQueue:   jobQueue,
-		webhookURL: webhookURL,
+		webhooks:   webhooks,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -35,21 +35,67 @@ func (w *Worker) Start() {
 	go func() {
 		for job := range w.jobQueue {
 			log.Printf("Worker %d: processing job", w.id)
-			err := w.send(job.Email)
-			if err != nil {
-				log.Printf("Worker %d: error sending webhook: %v", w.id, err)
-			}
+			w.processJob(job)
 		}
 	}()
 }
 
-func (w *Worker) send(email *email.ParsedEmail) error {
-	jsonData, err := json.Marshal(email)
+func (w *Worker) processJob(job Job) {
+	for _, webhook := range w.webhooks {
+		if w.shouldSend(job.Email, webhook) {
+			err := w.send(job.Email, webhook)
+			if err != nil {
+				log.Printf("Worker %d: error sending webhook '%s': %v", w.id, webhook.Name, err)
+			}
+		}
+	}
+}
+
+func (w *Worker) shouldSend(email *email.ParsedEmail, webhook config.WebhookConfig) bool {
+	senderMatch := false
+	for _, s := range webhook.Senders {
+		if s == "*" {
+			senderMatch = true
+			break
+		}
+		for _, from := range email.From {
+			if strings.Contains(from.Address, s) {
+				senderMatch = true
+				break
+			}
+		}
+		if senderMatch {
+			break
+		}
+	}
+
+	recipientMatch := false
+	for _, r := range webhook.Recipients {
+		if r == "*" {
+			recipientMatch = true
+			break
+		}
+		for _, to := range email.To {
+			if strings.Contains(to.Address, r) {
+				recipientMatch = true
+				break
+			}
+		}
+		if recipientMatch {
+			break
+		}
+	}
+
+	return senderMatch && recipientMatch
+}
+
+func (w *Worker) send(email *email.ParsedEmail, webhook config.WebhookConfig) error {
+	payload, err := FormatPayload(email, webhook.Template)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("POST", w.webhookURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", webhook.URL, payload)
 	if err != nil {
 		return err
 	}
@@ -67,20 +113,20 @@ func (w *Worker) send(email *email.ParsedEmail) error {
 type Dispatcher struct {
 	jobQueue   chan Job
 	maxWorkers int
-	webhookURL string
+	webhooks   []config.WebhookConfig
 }
 
-func NewDispatcher(maxWorkers int, webhookURL string) *Dispatcher {
+func NewDispatcher(maxWorkers int, webhooks []config.WebhookConfig) *Dispatcher {
 	return &Dispatcher{
 		jobQueue:   make(chan Job, 100),
 		maxWorkers: maxWorkers,
-		webhookURL: webhookURL,
+		webhooks:   webhooks,
 	}
 }
 
 func (d *Dispatcher) Run() {
 	for i := 1; i <= d.maxWorkers; i++ {
-		worker := NewWorker(i, d.jobQueue, d.webhookURL)
+		worker := NewWorker(i, d.jobQueue, d.webhooks)
 		worker.Start()
 	}
 }

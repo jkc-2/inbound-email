@@ -65,7 +65,7 @@ func main() {
 	logger.Init()
 	cfg := config.Load()
 
-	dispatcher := webhook.NewDispatcher(cfg.WebhookConcurrency, cfg.WebhookURL)
+	dispatcher := webhook.NewDispatcher(cfg.WebhookConcurrency, cfg.Webhooks)
 	dispatcher.Run()
 
 	be := &Backend{
